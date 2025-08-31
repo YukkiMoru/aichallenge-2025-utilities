@@ -18,25 +18,45 @@ except ImportError:
 # ファイルパス設定
 INPUT_FILE = "input.csv"  # 入力CSVファイルのパス
 OUTPUT_FILE = "output.csv"  # 出力CSVファイルのパス
-BACKGROUND_FILE = "background.csv" # 新しく追加する背景CSVファイルのパス
+BACKGROUND_FILE = "background.csv" # 背景として表示するCSVファイルのパス
+
+# --- 外観設定 ---
+THEME = "dark"  # "dark" または "light" を選択 (sv_ttk が必要)
+SHOW_POINT_INDICES = True  # Trueにすると点の横にインデックス番号を表示
+POINT_SIZE = 25  # データ点のマーカーサイズ
+SELECTED_POINT_HIGHLIGHT_SIZE = 80 # 選択された点のハイライトサイズ
+
+# --- 色設定 ---
+# HTMLカラーコード (例: '#FF0000') や色の名前 (例: 'red') で指定できます
+MAIN_CURVE_COLOR = '#00A0FF' # 編集対象のカーブの色
+BACKGROUND_CURVE_COLOR = '#FF4444' # 背景カーブの色
+LANE_BOUNDARY_COLOR = '#888888' # レーン境界線の色
+SELECTED_POINT_EDGE_COLOR = 'yellow' # 選択された点のハイライト色
+
+# --- 機能設定 ---
+RESAMPLE_RANGE_SIZE = 10 # 「範囲リサンプリング」で対象とする前後の点数
+DEFAULT_CURVE_SAMPLE_POINTS = 100 # 「曲線上サンプリング」のデフォルト点数
+MAX_HISTORY_SIZE = 20 # 元に戻す/やり直しの最大履歴数
+# ===============================
 
 class CsvCurveEditor(tk.Tk):
-    def __init__(self, input_file, output_file, background_file=None): # background_fileを追加
+    def __init__(self, input_file, output_file, background_file=None):
         super().__init__()
         self.input_file = input_file
         self.output_file = output_file
-        self.background_file = background_file # 新しいプロパティ
+        self.background_file = background_file
 
         if sv_ttk:
-            sv_ttk.set_theme("dark")
-            self.dark_mode = True
-        else:
-            self.dark_mode = False
+            try:
+                sv_ttk.set_theme(THEME)
+            except tk.TclError:
+                print(f"警告: テーマ '{THEME}' はsv_ttkでサポートされていません。デフォルトのテーマを使用します。")
+        self.dark_mode = (THEME == "dark" and sv_ttk is not None)
 
         self.data = []
         self.inner_lane_data = []
         self.outer_lane_data = []
-        self.background_data = [] # 背景データを保持するリストを追加
+        self.background_data = []
         self.fieldnames = []
         self._last_edited_index = None
         self._epsilon = 5
@@ -50,13 +70,11 @@ class CsvCurveEditor(tk.Tk):
 
         self.history = []
         self.redo_stack = []
-        self.max_history = 20
-
-        self.smoothing_factor = 3
+        self.max_history = MAX_HISTORY_SIZE
 
         self.load_csv()
         self.load_lane_boundaries()
-        self.load_background_data() # 背景データの読み込みを追加
+        self.load_background_data()
         if not self.data:
             self.destroy()
             return
@@ -197,17 +215,13 @@ class CsvCurveEditor(tk.Tk):
         bg_color = "#2b2b2b" if self.dark_mode else "white"
         fg_color = "white" if self.dark_mode else "black"
         plot_bg_color = "#3c3c3c" if self.dark_mode else "white"
-        grid_color = '#555555' if self.dark_mode else '#cccccc'
-
+        
         self.fig = Figure(figsize=(8, 6), dpi=100, facecolor=bg_color)
         self.ax = self.fig.add_subplot(111)
         self.ax.set_facecolor(plot_bg_color)
 
         self.ax.set_xlabel("X", color=fg_color)
         self.ax.set_ylabel("Y", color=fg_color)
-        self.ax.grid(True, color=grid_color)
-        self.ax.axis('equal')
-
         self.ax.tick_params(axis='x', colors=fg_color)
         self.ax.tick_params(axis='y', colors=fg_color)
         for spine in self.ax.spines.values():
@@ -216,18 +230,17 @@ class CsvCurveEditor(tk.Tk):
         control_frame = ttk.Frame(self)
         control_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        ttk.Label(control_frame, text="スムージング:").pack(side=tk.LEFT, padx=(0, 5))
-        self.smoothing_slider = ttk.Scale(control_frame, from_=0, to=10, orient=tk.HORIZONTAL, command=self.on_smoothing_change)
-        self.smoothing_slider.set(self.smoothing_factor)
-        self.smoothing_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
         resample_button = ttk.Button(control_frame, text="範囲リサンプリング", command=self.resample_range)
-        resample_button.pack(side=tk.LEFT, padx=(5, 0))
+        resample_button.pack(side=tk.LEFT, padx=(0, 5))
 
         resample_all_button = ttk.Button(control_frame, text="全体リサンプリング", command=self.resample_points)
-        resample_all_button.pack(side=tk.LEFT, padx=(5, 0))
+        resample_all_button.pack(side=tk.LEFT, padx=(5, 5))
 
-        sample_curve_button = ttk.Button(control_frame, text="曲線上サンプリング(100点)", command=self.sample_curve_points)
+        sample_curve_button = ttk.Button(
+            control_frame,
+            text=f"曲線上サンプリング({DEFAULT_CURVE_SAMPLE_POINTS}点)",
+            command=self.sample_curve_points
+        )
         sample_curve_button.pack(side=tk.LEFT, padx=(5, 0))
 
         canvas_frame = ttk.Frame(self)
@@ -238,12 +251,16 @@ class CsvCurveEditor(tk.Tk):
         save_button = ttk.Button(self, text="編集内容を保存", command=self.save_csv)
         save_button.pack(pady=10)
 
-    def sample_curve_points(self, num_points=100):
+    def sample_curve_points(self, num_points=None):
+        if num_points is None:
+            num_points = DEFAULT_CURVE_SAMPLE_POINTS
+
         if len(self.data) < 4:
             messagebox.showwarning("警告", "サンプリングするには点が少なすぎます。")
             return
         try:
             from scipy.spatial import KDTree
+            self.save_history_state()
             old_data = [row.copy() for row in self.data]
             points = np.array([[row['x'] for row in old_data], [row['y'] for row in old_data]])
             tck, u = splprep(points, s=0, per=True)
@@ -260,50 +277,38 @@ class CsvCurveEditor(tk.Tk):
                 base_row['y'] = y_new
                 new_data.append(base_row)
             self.data = new_data
-            self.save_history_state()
             self.plot_data()
             messagebox.showinfo("成功", f"曲線上を{num_points}点でサンプリングしました。")
         except Exception as e:
             print(f"曲線サンプリングエラー: {e}")
             messagebox.showerror("エラー", f"曲線サンプリング中にエラーが発生しました: {e}")
 
-    def on_smoothing_change(self, value):
-        self.smoothing_factor = float(value)
-        self.plot_data()
-
     def plot_data(self):
-        self.ax.clear() # 既存の描画を全てクリア
+        self.ax.clear()
 
-        bg_color = "#2b2b2b" if self.dark_mode else "white"
         fg_color = "white" if self.dark_mode else "black"
         plot_bg_color = "#3c3c3c" if self.dark_mode else "white"
         grid_color = '#555555' if self.dark_mode else '#cccccc'
-
+        
         self.ax.set_facecolor(plot_bg_color)
         self.ax.set_xlabel("X", color=fg_color)
         self.ax.set_ylabel("Y", color=fg_color)
         self.ax.grid(True, color=grid_color)
         self.ax.axis('equal')
-
         self.ax.tick_params(axis='x', colors=fg_color)
         self.ax.tick_params(axis='y', colors=fg_color)
         for spine in self.ax.spines.values():
             spine.set_edgecolor(fg_color)
 
-        # --- 新機能: 背景データの描画 (最背面) ---
         if self.background_data:
             bg_points = np.array([[row['x'] for row in self.background_data], [row['y'] for row in self.background_data]])
-            # 背景なので、目立たない色で、点ではなく線のみを描画
-            self.ax.plot(bg_points[0], bg_points[1], '-', color="#FF0000", linewidth=1, alpha=0.7, zorder=0)
-            self.ax.scatter(bg_points[0], bg_points[1], color="#FF0000", s=5, zorder=0)
+            self.ax.plot(bg_points[0], bg_points[1], '-', color=BACKGROUND_CURVE_COLOR, linewidth=1, alpha=0.7, zorder=0)
+            self.ax.scatter(bg_points[0], bg_points[1], color=BACKGROUND_CURVE_COLOR, s=5, zorder=0)
 
-
-        # レーン境界の描画
-        lane_color = '#777777' if self.dark_mode else 'k'
+        lane_color = LANE_BOUNDARY_COLOR
         if self.inner_lane_data:
             inner_points = np.array([[row['x'] for row in self.inner_lane_data], [row['y'] for row in self.inner_lane_data]])
             self.ax.plot(inner_points[0], inner_points[1], '--', color=lane_color, linewidth=0.5, zorder=1)
-
         if self.outer_lane_data:
             outer_points = np.array([[row['x'] for row in self.outer_lane_data], [row['y'] for row in self.outer_lane_data]])
             self.ax.plot(outer_points[0], outer_points[1], '--', color=lane_color, linewidth=0.5, zorder=1)
@@ -315,48 +320,42 @@ class CsvCurveEditor(tk.Tk):
         points = np.array([[row['x'] for row in self.data], [row['y'] for row in self.data]])
         speeds = np.array([row.get('speed', 0) for row in self.data])
 
-        # メインデータの点と線の描画 (中間のレイヤー)
         if 'speed' in self.fieldnames and len(speeds) > 0:
             cmap = plt.get_cmap('jet')
             norm = plt.Normalize(vmin=speeds.min(), vmax=speeds.max())
             colors = cmap(norm(speeds))
-            self.ax.scatter(points[0], points[1], c=colors, s=25, zorder=5)
+            self.ax.scatter(points[0], points[1], c=colors, s=POINT_SIZE, zorder=5)
         else:
-            point_color = 'red'
-            self.ax.scatter(points[0], points[1], color=point_color, s=25, zorder=5)
+            self.ax.scatter(points[0], points[1], color=MAIN_CURVE_COLOR, s=POINT_SIZE, zorder=5)
 
-        # 選択された点をハイライト表示 (最前面)
         if self.selected_indices:
             selected_points = np.array([[self.data[i]['x'] for i in self.selected_indices],
                                         [self.data[i]['y'] for i in self.selected_indices]])
             self.ax.scatter(selected_points[0], selected_points[1],
-                            facecolors='none', edgecolors='yellow', s=80, linewidth=2, zorder=6)
+                            facecolors='none', edgecolors=SELECTED_POINT_EDGE_COLOR, s=SELECTED_POINT_HIGHLIGHT_SIZE, linewidth=2, zorder=6)
 
-        line_color = '#00A0FF' if self.dark_mode else 'b'
-        label_color = 'white' if self.dark_mode else 'black'
-        try:
-            xlim = self.ax.get_xlim()
-            ylim = self.ax.get_ylim()
-            dx = (xlim[1] - xlim[0]) * 0.01
-            dy = (ylim[1] - ylim[0]) * 0.01
-        except Exception:
-            dx = dy = 0.5
-
-        for idx in range(points.shape[1]):
-            self.ax.text(points[0][idx] + dx, points[1][idx] + dy, str(idx), color=label_color, fontsize=8, zorder=7)
+        if SHOW_POINT_INDICES:
+            try:
+                xlim = self.ax.get_xlim()
+                ylim = self.ax.get_ylim()
+                dx = (xlim[1] - xlim[0]) * 0.01
+                dy = (ylim[1] - ylim[0]) * 0.01
+            except Exception:
+                dx = dy = 0.5
+            for idx in range(points.shape[1]):
+                self.ax.text(points[0][idx] + dx, points[1][idx] + dy, str(idx), color=fg_color, fontsize=8, zorder=7)
 
         if len(self.data) > 3:
             try:
-                tck, u = splprep(points, s=0, per=True)
+                tck, u = splprep(points, s=0, per=True) # スムージングなし(s=0)に固定
                 unew = np.linspace(u.min(), u.max(), 1000)
                 xnew, ynew = splev(unew, tck, der=0)
-                self.ax.plot(xnew, ynew, '-', color=line_color, zorder=4)
+                self.ax.plot(xnew, ynew, '-', color=MAIN_CURVE_COLOR, zorder=4)
             except Exception:
-                self.ax.plot(np.append(points[0], points[0][0]), np.append(points[1], points[1][0]), '-', color=line_color, zorder=4)
+                self.ax.plot(np.append(points[0], points[0][0]), np.append(points[1], points[1][0]), '-', color=MAIN_CURVE_COLOR, zorder=4)
         else:
-            self.ax.plot(np.append(points[0], points[0][0]), np.append(points[1], points[1][0]), '-', color=line_color, zorder=4)
+            self.ax.plot(np.append(points[0], points[0][0]), np.append(points[1], points[1][0]), '-', color=MAIN_CURVE_COLOR, zorder=4)
         
-        # 描画後に選択矩形があれば追加し直す (クリアされるため)
         if self.drag_mode == 'selection' and self.selection_rect:
             self.ax.add_patch(self.selection_rect)
 
@@ -398,7 +397,7 @@ class CsvCurveEditor(tk.Tk):
             self.rect_start_pos = (event.xdata, event.ydata)
             self.selection_rect = Rectangle(self.rect_start_pos, 0, 0,
                                             facecolor='blue', alpha=0.2,
-                                            edgecolor='blue', linestyle='--', zorder=8) # zorderを高く設定
+                                            edgecolor='blue', linestyle='--', zorder=8)
             self.ax.add_patch(self.selection_rect)
 
         self.plot_data()
@@ -411,7 +410,6 @@ class CsvCurveEditor(tk.Tk):
             min_x, max_x = min(x0, x1), max(x0, x1)
             min_y, max_y = min(y0, y1), max(y0, y1)
 
-            self.selected_indices.clear()
             for i, row in enumerate(self.data):
                 if min_x <= row['x'] <= max_x and min_y <= row['y'] <= max_y:
                     self.selected_indices.add(i)
@@ -461,7 +459,7 @@ class CsvCurveEditor(tk.Tk):
 
         self.save_history_state()
         
-        range_size = 10 
+        range_size = RESAMPLE_RANGE_SIZE
         num_points = len(self.data)
 
         start_index = (self._last_edited_index - range_size + num_points) % num_points
@@ -481,7 +479,7 @@ class CsvCurveEditor(tk.Tk):
         range_points = np.array([[p['x'] for p in range_points_orig], [p['y'] for p in range_points_orig]])
 
         try:
-            tck, u = splprep(range_points, s=self.smoothing_factor, per=False)
+            tck, u = splprep(range_points, s=0, per=False) # スムージングなし(s=0)に固定
             u_new = np.linspace(u.min(), u.max(), len(indices))
             new_points = splev(u_new, tck, der=0)
             
@@ -489,7 +487,6 @@ class CsvCurveEditor(tk.Tk):
                 self.data[idx]['x'] = new_points[0][i]
                 self.data[idx]['y'] = new_points[1][i]
 
-            self.save_history_state()
             self.plot_data()
             messagebox.showinfo("成功", "選択範囲のリサンプリングが完了しました。")
 
@@ -498,7 +495,7 @@ class CsvCurveEditor(tk.Tk):
             messagebox.showerror("エラー", f"範囲リサンプリング中にエラーが発生しました: {e}")
 
     def resample_points(self):
-        if messagebox.askokcancel("確認", "すべての点を再配置しますか？この操作は元に戻せません。"):
+        if messagebox.askokcancel("確認", "すべての点を再配置しますか？"):
             if len(self.data) < 4:
                 return
 
@@ -506,7 +503,7 @@ class CsvCurveEditor(tk.Tk):
 
             points = np.array([[row['x'] for row in self.data], [row['y'] for row in self.data]])
             try:
-                tck, u = splprep(points, s=self.smoothing_factor, per=True)
+                tck, u = splprep(points, s=0, per=True) # スムージングなし(s=0)に固定
                 u_new = np.linspace(u.min(), u.max(), len(self.data))
                 new_points = splev(u_new, tck, der=0)
 
@@ -525,7 +522,6 @@ class CsvCurveEditor(tk.Tk):
                 
                 self.data = new_data_list
 
-                self.save_history_state()
                 self.plot_data()
                 messagebox.showinfo("成功", "全体の再サンプリングが完了しました。")
 
@@ -542,7 +538,11 @@ class CsvCurveEditor(tk.Tk):
                 for row in self.data:
                     new_row = row.copy()
                     for key, value in new_row.items():
-                        new_row[key] = str(value)
+                        # 浮動小数点数を適切な精度で文字列に変換
+                        if isinstance(value, float):
+                            new_row[key] = f"{value:.8f}" # 小数点以下8桁の例
+                        else:
+                            new_row[key] = str(value)
                     data_to_write.append(new_row)
                 writer.writerows(data_to_write)
             messagebox.showinfo("成功", f"データが {self.output_file} に保存されました")
@@ -550,6 +550,5 @@ class CsvCurveEditor(tk.Tk):
             messagebox.showerror("エラー", f"CSV保存中にエラーが発生しました: {e}")
 
 if __name__ == "__main__":
-    # BACKGROUND_FILE を CsvCurveEditor の初期化時に渡す
     app = CsvCurveEditor(INPUT_FILE, OUTPUT_FILE, BACKGROUND_FILE)
     app.mainloop()
